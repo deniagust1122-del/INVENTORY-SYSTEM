@@ -38,7 +38,12 @@ async function startServer() {
 
       const response = await fetch(targetUrl, options);
       
-      const responseHeadersToForward = ["content-type", "cache-control"];
+      // Prevent browser caching on the proxy response
+      res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+      res.setHeader("Pragma", "no-cache");
+      res.setHeader("Expires", "0");
+
+      const responseHeadersToForward = ["content-type"];
       responseHeadersToForward.forEach((h) => {
         const val = response.headers.get(h);
         if (val) {

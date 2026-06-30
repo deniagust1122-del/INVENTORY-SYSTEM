@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { initAuth, googleSignIn, googleSignOut } from './firebase-auth';
+import { Loader2, CheckCircle2, AlertCircle, Clock } from 'lucide-react';
 import { 
   Package, 
   ClipboardList, 
@@ -26,11 +27,13 @@ import UsersTab from './components/UsersTab';
 import FormulasTab from './components/FormulasTab';
 import SettingsTab from './components/SettingsTab';
 import PrintLPB from './components/PrintLPB';
+import CetakLPB from './components/CetakLPB';
 import LoginPage from './components/LoginPage';
 import SPBTab from './components/SPBTab';
+import LaporanTab from './components/LaporanTab';
 import { fetchPenerimaanItems, fetchUsers } from './sheets-api';
 
-type TabType = 'dashboard' | 'penerimaan' | 'pengeluaran' | 'spb' | 'master' | 'user' | 'formulas' | 'settings';
+type TabType = 'dashboard' | 'penerimaan' | 'pengeluaran' | 'spb' | 'master' | 'user' | 'formulas' | 'settings' | 'laporan';
 
 interface CustomUser {
   username: string;
@@ -71,6 +74,50 @@ export default function App() {
   } | null>(null);
 
   const appUrl = window.location.origin;
+
+  // Global Toast / Background Task Notifications state
+  const [toasts, setToasts] = useState<Array<{
+    id: string;
+    status: 'loading' | 'success' | 'error' | 'timeout';
+    message: string;
+    timestamp: number;
+  }>>([]);
+
+  // Listen to background sync task notifications
+  useEffect(() => {
+    const handleBgSync = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      if (!detail || !detail.id) return;
+
+      setToasts((prev) => {
+        const existingIdx = prev.findIndex(t => t.id === detail.id);
+        const newToast = {
+          id: detail.id,
+          status: detail.status,
+          message: detail.message,
+          timestamp: Date.now()
+        };
+
+        if (existingIdx !== -1) {
+          const updated = [...prev];
+          updated[existingIdx] = newToast;
+          return updated;
+        } else {
+          return [...prev, newToast];
+        }
+      });
+
+      // Auto-remove success toasts after 6 seconds to keep it clean
+      if (detail.status === 'success') {
+        setTimeout(() => {
+          setToasts((prev) => prev.filter(t => t.id !== detail.id || t.status !== 'success'));
+        }, 6000);
+      }
+    };
+
+    window.addEventListener('bg-sync-task', handleBgSync);
+    return () => window.removeEventListener('bg-sync-task', handleBgSync);
+  }, []);
 
   // URL parameters auto-load for printing specific LPB documents directly
   useEffect(() => {
@@ -164,7 +211,7 @@ export default function App() {
     if (customUser) {
       const userRole = (customUser.role || '').trim().toLowerCase();
       if (userRole === 'gudang') {
-        const allowedGudangTabs: TabType[] = ['dashboard', 'penerimaan', 'pengeluaran'];
+        const allowedGudangTabs: TabType[] = ['dashboard', 'penerimaan', 'pengeluaran', 'spb', 'laporan'];
         if (!allowedGudangTabs.includes(activeTab)) {
           setActiveTab('dashboard');
         }
@@ -191,27 +238,88 @@ export default function App() {
     setPrintData(data);
   };
 
+  // Render toast notifications beautifully
+  const renderToasts = () => {
+    if (toasts.length === 0) return null;
+
+    return (
+      <div className="fixed bottom-6 right-6 z-100 flex flex-col gap-3 max-w-sm w-full pointer-events-none print:hidden">
+        {toasts.map((toast) => {
+          const isSuccess = toast.status === 'success';
+          const isError = toast.status === 'error';
+          const isTimeout = toast.status === 'timeout';
+          const isLoading = toast.status === 'loading';
+
+          return (
+            <div
+              key={toast.id}
+              className={`pointer-events-auto p-4 rounded-xl border shadow-xl flex items-start gap-3 transition-all duration-300 transform translate-y-0 animate-in slide-in-from-bottom-5 bg-white ${
+                isSuccess ? 'border-emerald-200 bg-emerald-50/90 text-emerald-900' :
+                isError ? 'border-red-200 bg-red-50/90 text-red-900' :
+                isTimeout ? 'border-amber-200 bg-amber-50/90 text-amber-900' :
+                'border-indigo-100 bg-indigo-50/90 text-indigo-900'
+              }`}
+            >
+              <div className="shrink-0 mt-0.5">
+                {isLoading && <Loader2 className="h-5 w-5 animate-spin text-indigo-600" />}
+                {isSuccess && <CheckCircle2 className="h-5 w-5 text-emerald-600" />}
+                {isError && <AlertCircle className="h-5 w-5 text-red-600" />}
+                {isTimeout && <Clock className="h-5 w-5 text-amber-600 animate-pulse" />}
+              </div>
+              <div className="flex-1">
+                <p className="text-xs font-bold uppercase tracking-wide">
+                  {isSuccess ? 'Sinkronisasi Berhasil' :
+                   isError ? 'Sinkronisasi Gagal' :
+                   isTimeout ? 'Koneksi Lambat' :
+                   'Sinkronisasi Latar Belakang'}
+                </p>
+                <p className="text-[11px] font-medium leading-relaxed mt-0.5 opacity-90">
+                  {toast.message}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setToasts((prev) => prev.filter(t => t.id !== toast.id))}
+                className="shrink-0 text-slate-400 hover:text-slate-600 p-0.5 rounded-full transition"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          );
+        })}
+      </div>
+    );
+  };
+
+  // If the URL pathname matches /cetak-lpb, render the dedicated printer component completely standalone
+  if (window.location.pathname === '/cetak-lpb') {
+    return <CetakLPB />;
+  }
+
   // If in printing mode, render the print receipt view immediately
   if (printData) {
     return (
-      <PrintLPB
-        noLPB={printData.noLPB}
-        noPO={printData.noPO}
-        kodeBarang={printData.kodeBarang}
-        namaBarang={printData.namaBarang}
-        qty={printData.qty}
-        satuan={printData.satuan}
-        hargaSatuan={printData.hargaSatuan}
-        total={printData.total}
-        supplier={printData.supplier}
-        tanggal={printData.tanggal}
-        diskon={printData.diskon}
-        ppn={printData.ppn}
-        verification={printData.verification}
-        petugas={printData.petugas}
-        initialPrintMode={printData.printMode}
-        onBack={() => setPrintData(null)}
-      />
+      <>
+        <PrintLPB
+          noLPB={printData.noLPB}
+          noPO={printData.noPO}
+          kodeBarang={printData.kodeBarang}
+          namaBarang={printData.namaBarang}
+          qty={printData.qty}
+          satuan={printData.satuan}
+          hargaSatuan={printData.hargaSatuan}
+          total={printData.total}
+          supplier={printData.supplier}
+          tanggal={printData.tanggal}
+          diskon={printData.diskon}
+          ppn={printData.ppn}
+          verification={printData.verification}
+          petugas={printData.petugas}
+          initialPrintMode={printData.printMode}
+          onBack={() => setPrintData(null)}
+        />
+        {renderToasts()}
+      </>
     );
   }
 
@@ -332,6 +440,19 @@ export default function App() {
           >
             <ClipboardList className="h-4 w-4" />
             <span>Permintaan (SPB)</span>
+          </button>
+
+          {/* 5. Laporan (All Roles) */}
+          <button
+            onClick={() => setActiveTab('laporan')}
+            className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg text-xs font-bold transition cursor-pointer ${
+              activeTab === 'laporan'
+                ? 'bg-indigo-600 text-white'
+                : 'text-slate-400 hover:text-white hover:bg-slate-800/50'
+            }`}
+          >
+            <FileSpreadsheet className="h-4 w-4" />
+            <span>Laporan Stok & Mutasi</span>
           </button>
 
           {/* Admin / Manager Only Navigation Items */}
@@ -525,6 +646,16 @@ export default function App() {
               <span>Permintaan (SPB)</span>
             </button>
 
+            <button
+              onClick={() => { setActiveTab('laporan'); setMobileMenuOpen(false); }}
+              className={`w-full flex items-center gap-2.5 px-4 py-2.5 text-xs font-bold rounded-lg ${
+                activeTab === 'laporan' ? 'bg-indigo-50 text-indigo-800' : 'text-slate-600 hover:bg-slate-50'
+              }`}
+            >
+              <FileSpreadsheet className="h-4 w-4" />
+              <span>Laporan Stok & Mutasi</span>
+            </button>
+
             {!isGudang && (
               <>
                 <button
@@ -597,6 +728,7 @@ export default function App() {
             )}
             {activeTab === 'pengeluaran' && <PengeluaranForm token={token || ''} />}
             {activeTab === 'spb' && <SPBTab token={token || ''} />}
+            {activeTab === 'laporan' && <LaporanTab token={token || ''} />}
             
             {!isGudang && (
               <>
@@ -612,7 +744,10 @@ export default function App() {
         {/* Horizontal Footer */}
         <footer className="bg-white border-t border-slate-200 py-6 print:hidden mt-auto">
           <div className="px-8 flex flex-col sm:flex-row justify-between items-center gap-3 text-xs text-slate-400">
-            <p>© 2026 Kyokko Beach Gudang Logistik. Powered by Kyokko Beach.</p>
+            <div className="flex flex-col items-center sm:items-start">
+              <p>© 2026 Kyokko Beach Gudang Logistik. Powered by Kyokko Beach.</p>
+              <p className="text-[10px] text-slate-300 mt-1 font-mono">Build Terbaru: {(import.meta as any).env?.VITE_BUILD_DATE || 'Mode Pengembangan'}</p>
+            </div>
             {token && !isGudang && (
               <div className="flex gap-4">
                 <a 
@@ -627,6 +762,7 @@ export default function App() {
             )}
           </div>
         </footer>
+        {renderToasts()}
       </div>
     </div>
   );

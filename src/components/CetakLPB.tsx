@@ -1,48 +1,58 @@
-import React, { useRef, useState } from 'react';
-import { Printer, QrCode, ArrowLeft } from 'lucide-react';
+import React, { useRef, useState, useEffect } from 'react';
+import { Printer, QrCode, ArrowLeft, Loader2, RefreshCw } from 'lucide-react';
+import { fetchPenerimaanItems, PenerimaanItem } from '../sheets-api';
 
-interface PrintLPBProps {
-  noLPB: string;
-  noPO: string;
-  kodeBarang: string;
-  namaBarang: string;
-  qty: number;
-  satuan: string;
-  hargaSatuan: number;
-  total: number;
-  supplier: string;
-  tanggal: string;
-  diskon?: number;
-  ppn?: number;
-  verification?: string;
-  petugas?: string;
-  initialPrintMode?: 'all' | 'lpb' | 'barcode';
-  onBack: () => void;
-}
-
-export default function PrintLPB({
-  noLPB,
-  noPO,
-  kodeBarang,
-  namaBarang,
-  qty,
-  satuan,
-  hargaSatuan,
-  total,
-  supplier,
-  tanggal,
-  diskon = 0,
-  ppn = 0,
-  verification,
-  petugas,
-  initialPrintMode = 'all',
-  onBack
-}: PrintLPBProps) {
+export default function CetakLPB() {
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [item, setItem] = useState<PenerimaanItem | null>(null);
+  const [printMode, setPrintMode] = useState<'all' | 'lpb' | 'barcode'>('all');
   const printAreaRef = useRef<HTMLDivElement>(null);
-  const [printMode, setPrintMode] = useState<'all' | 'lpb' | 'barcode'>(initialPrintMode);
+
+  // Extract no_lpb from URL query parameter
+  const params = new URLSearchParams(window.location.search);
+  const noLpb = params.get('no_lpb') || params.get('lpb') || '';
+
+  const loadData = async () => {
+    try {
+      setLoading(true);
+      setError(null);
+
+      if (!noLpb) {
+        throw new Error('Nomor LPB tidak ditemukan di parameter URL. Pastikan link memiliki format: ?no_lpb=LPB-XXXXXX');
+      }
+
+      // Read token from local storage or use default fallback for simplicity
+      const token = localStorage.getItem('google_token') || 'apps-script-backend';
+      const items = await fetchPenerimaanItems(token);
+      
+      const matched = items.find(
+        (i) => String(i.noLPB).trim().toUpperCase() === String(noLpb).trim().toUpperCase()
+      );
+
+      if (!matched) {
+        throw new Error(`Data Penerimaan dengan nomor LPB "${noLpb}" tidak ditemukan di database Google Sheets.`);
+      }
+
+      setItem(matched);
+    } catch (err: any) {
+      console.error('Error fetching LPB details for print:', err);
+      setError(err.message || 'Terjadi kesalahan saat memproses data.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadData();
+  }, [noLpb]);
 
   const handlePrint = () => {
     window.print();
+  };
+
+  const handleBack = () => {
+    window.location.href = '/';
   };
 
   const formatRupiah = (val: number) => {
@@ -52,6 +62,63 @@ export default function PrintLPB({
       maximumFractionDigits: 0
     }).format(val);
   };
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center p-6 text-center">
+        <Loader2 className="h-10 w-10 text-indigo-600 animate-spin mb-4" />
+        <h3 className="text-base font-bold text-slate-800">Memuat Dokumen LPB...</h3>
+        <p className="text-xs text-slate-500 mt-1 max-w-md">
+          Sedang mengambil data transaksi terverifikasi langsung dari Google Sheets untuk {noLpb || 'LPB Baru'}
+        </p>
+      </div>
+    );
+  }
+
+  if (error || !item) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center p-6 text-center">
+        <div className="rounded-full bg-rose-100 p-3 text-rose-600 mb-4">
+          <ArrowLeft className="h-6 w-6" />
+        </div>
+        <h3 className="text-lg font-bold text-slate-900">Gagal Membuka Dokumen Cetak</h3>
+        <p className="text-sm text-slate-600 mt-2 max-w-md bg-white p-4 rounded-lg border border-slate-200">
+          {error}
+        </p>
+        <div className="mt-6 flex gap-3">
+          <button
+            onClick={handleBack}
+            className="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 shadow-sm cursor-pointer"
+          >
+            Kembali ke Aplikasi Utama
+          </button>
+          <button
+            onClick={loadData}
+            className="inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-xs font-semibold text-white hover:bg-indigo-700 shadow-sm cursor-pointer"
+          >
+            <RefreshCw className="h-3 w-3" /> Coba Lagi
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  const {
+    noLPB,
+    noPO,
+    kodeBarang,
+    namaBarang,
+    qty,
+    satuan,
+    hargaSatuan,
+    total,
+    supplier,
+    tanggal,
+    diskon = 0,
+    ppn = 0,
+    verification,
+    petugas
+  } = item;
 
   const formattedHarga = formatRupiah(hargaSatuan);
   const formattedTotal = formatRupiah(total);
@@ -63,11 +130,11 @@ export default function PrintLPB({
         {/* Control Panel (Hidden in print) */}
         <div className="mb-8 flex flex-wrap items-center justify-between gap-4 border-b border-slate-200 pb-6 print:hidden">
           <button
-            onClick={onBack}
+            onClick={handleBack}
             className="inline-flex items-center gap-2 text-sm font-medium text-slate-600 hover:text-slate-900 cursor-pointer"
           >
             <ArrowLeft className="h-4 w-4" />
-            Kembali ke LPB
+            Kembali ke Aplikasi Utama
           </button>
           
           {/* Print Layout Toggle */}
@@ -161,11 +228,11 @@ export default function PrintLPB({
       {/* Control Panel (Hidden in print) */}
       <div className="mb-8 flex flex-wrap items-center justify-between gap-4 border-b border-slate-200 pb-6 print:hidden">
         <button
-          onClick={onBack}
+          onClick={handleBack}
           className="inline-flex items-center gap-2 text-sm font-medium text-slate-600 hover:text-slate-900 cursor-pointer"
         >
           <ArrowLeft className="h-4 w-4" />
-          Kembali ke LPB
+          Kembali ke Aplikasi Utama
         </button>
 
         {/* Print Layout Toggle */}

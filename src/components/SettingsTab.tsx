@@ -43,9 +43,17 @@ export default function SettingsTab() {
         throw new Error('URL tidak boleh kosong.');
       }
       
-      const testUrl = `${tempUrl}?action=read&sheet=USERS&range=A1:B2`;
-      const proxyUrl = `/api/proxy?url=${encodeURIComponent(testUrl)}`;
-      const res = await fetch(proxyUrl);
+      const nocache = `${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+      const testUrl = `${tempUrl}?action=read&sheet=USERS&range=A1:B2&_nocache=${nocache}`;
+      const proxyUrl = `/api/proxy?url=${encodeURIComponent(testUrl)}&_t=${nocache}`;
+      const res = await fetch(proxyUrl, {
+        cache: 'no-store',
+        headers: {
+          'Cache-Control': 'no-cache, no-store, must-revalidate',
+          'Pragma': 'no-cache',
+          'Expires': '0'
+        }
+      });
       if (!res.ok) {
         throw new Error(`Koneksi gagal (HTTP ${res.status}): ${res.statusText}`);
       }

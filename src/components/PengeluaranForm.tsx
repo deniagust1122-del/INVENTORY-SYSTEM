@@ -1,5 +1,16 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { fetchMasterBarangItems, fetchPengeluaranItems, appendPengeluaranRow, MasterBarangItem, PengeluaranItem, fetchSPBItems, updateSPBStatus, SPBItem } from '../sheets-api';
+import { 
+  fetchMasterBarangItems, 
+  fetchPengeluaranItems, 
+  appendPengeluaranRow, 
+  MasterBarangItem, 
+  PengeluaranItem, 
+  fetchSPBItems, 
+  updateSPBStatus, 
+  SPBItem,
+  fetchMasterPengeluaranItems,
+  MasterPengeluaranItem
+} from '../sheets-api';
 import { 
   FileSpreadsheet, 
   Loader2, 
@@ -28,7 +39,6 @@ export default function PengeluaranForm({ token }: PengeluaranFormProps) {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [submitting, setSubmitting] = useState(false);
 
   // Search & Dynamic Dropdown Master Barang state
   const [searchQuery, setSearchQuery] = useState('');
@@ -146,57 +156,112 @@ export default function PengeluaranForm({ token }: PengeluaranFormProps) {
     setShowConfirmModal(true);
   };
 
-  const handleSubmit = async () => {
+  const handleSubmit = () => {
     if (!selectedBarang) return;
 
-    try {
-      setSubmitting(true);
-      setShowConfirmModal(false);
+    const dataToSave = {
+      tanggal,
+      noSKB,
+      kodeBarang: selectedBarang.kodeBarang,
+      namaBarang: selectedBarang.namaBarang,
+      satuan: selectedBarang.satuan,
+      qty: qtyPengeluaran,
+      hargaSatuan,
+      total: totalValue,
+      kodePakai,
+      costCenter,
+      coa,
+      keterangan: keterangan || `Pengeluaran SKB No. ${noSKB}`
+    };
 
-      await appendPengeluaranRow(
-        {
-          tanggal,
-          noSKB,
-          kodeBarang: selectedBarang.kodeBarang,
-          namaBarang: selectedBarang.namaBarang,
-          satuan: selectedBarang.satuan,
-          qty: qtyPengeluaran,
-          hargaSatuan,
-          total: totalValue,
-          kodePakai,
-          costCenter,
-          coa,
-          keterangan: keterangan || `Pengeluaran SKB No. ${noSKB}`
-        },
-        token
-      );
+    const spbToUpdate = selectedSpb;
+    const oldNoSKB = noSKB;
 
-      // If there was an associated SPB, update its status to Approved (Disetujui)
-      if (selectedSpb) {
-        try {
-          await updateSPBStatus(selectedSpb.noSPB, 'Disetujui', token);
-        } catch (err) {
-          console.error('Failed to update SPB status in real-time:', err);
-        }
-        setSelectedSpb(null);
+    // Close modal immediately (Optimistic Feedback)
+    setShowConfirmModal(false);
+
+    // Clean inputs and regenerate SKB instantly so the UI remains fast & responsive
+    const dateStr = new Date().toISOString().split('T')[0].replace(/-/g, '');
+    const randomNum = Math.floor(1000 + Math.random() * 9000);
+    setNoSKB(`SKB-${dateStr}-${randomNum}`);
+    setSelectedBarang(null);
+    setSelectedSpb(null);
+    setQtyPengeluaran(0);
+    setKeterangan('');
+
+    console.log(`[OPTIMISTIC_UI] Pengeluaran ${oldNoSKB} diproses instan. Menulis data ke Google Sheets di latar belakang...`);
+
+    // Dispatch background sync event to App.tsx
+    window.dispatchEvent(new CustomEvent('bg-sync-task', {
+      detail: {
+        id: oldNoSKB,
+        status: 'loading',
+        message: `Menulis data pengeluaran (${oldNoSKB}) ke Google Sheets...`
       }
+    }));
 
-      // Clean inputs and regenerate SKB
-      const dateStr = new Date().toISOString().split('T')[0].replace(/-/g, '');
-      const randomNum = Math.floor(1000 + Math.random() * 9000);
-      setNoSKB(`SKB-${dateStr}-${randomNum}`);
-      setSelectedBarang(null);
-      setQtyPengeluaran(0);
-      setKeterangan('');
+    let completed = false;
 
-      await loadData(true);
-      alert('Data pengeluaran barang (SKB) berhasil disimpan!');
-    } catch (err: any) {
-      console.error(err);
-      alert(`Gagal menyimpan data pengeluaran: ${err.message}`);
-    } finally {
-      setSubmitting(false);
-    }
+    // Timeout fallback mechanism after 5 seconds to inform the user safely without freezing
+    const timeoutTimer = setTimeout(() => {
+      if (!completed) {
+        console.warn(`[TIMEOUT_WARN] Penulisan data pengeluaran ${oldNoSKB} lambat.`);
+        window.dispatchEvent(new CustomEvent('bg-sync-task', {
+          detail: {
+            id: oldNoSKB,
+            status: 'timeout',
+            message: `Koneksi Google Sheets lambat. Proses penulisan ${oldNoSKB} tetap berjalan di latar belakang.`
+          }
+        }));
+      }
+    }, 5000);
+
+    // Save the row asynchronously
+    appendPengeluaranRow(dataToSave, token)
+      .then(async () => {
+        // Auto-update associated SPB status in the background
+        if (spbToUpdate) {
+          console.log(`[OPTIMISTIC_UI] Memperbarui status SPB ${spbToUpdate.noSPB} menjadi Disetujui di latar belakang...`);
+          try {
+            await updateSPBStatus(spbToUpdate.noSPB, 'Disetujui', token);
+          } catch (spbErr) {
+            console.error('[OPTIMISTIC_UI] Gagal memperbarui status SPB:', spbErr);
+          }
+        }
+
+        completed = true;
+        clearTimeout(timeoutTimer);
+
+        // Dispatch success notification
+        window.dispatchEvent(new CustomEvent('bg-sync-task', {
+          detail: {
+            id: oldNoSKB,
+            status: 'success',
+            message: `Pengeluaran SKB (${oldNoSKB}) ${spbToUpdate ? 'dan approval SPB' : ''} berhasil disimpan ke Google Sheets.`
+          }
+        }));
+
+        // Refresh lists silently in background
+        try {
+          await loadData(true);
+        } catch (syncErr) {
+          console.warn('[OPTIMISTIC_UI] Silent reload failed', syncErr);
+        }
+      })
+      .catch((err: any) => {
+        completed = true;
+        clearTimeout(timeoutTimer);
+        console.error(`[OPTIMISTIC_UI] Gagal menulis pengeluaran ${oldNoSKB}:`, err);
+
+        // Dispatch error notification
+        window.dispatchEvent(new CustomEvent('bg-sync-task', {
+          detail: {
+            id: oldNoSKB,
+            status: 'error',
+            message: `Gagal menyimpan Pengeluaran (${oldNoSKB}): ${err.message || 'Koneksi error'}`
+          }
+        }));
+      });
   };
 
   // Filter history
@@ -693,7 +758,7 @@ export default function PengeluaranForm({ token }: PengeluaranFormProps) {
           <div className="w-full max-w-md rounded-xl bg-white p-6 shadow-2xl border border-slate-200">
             <h4 className="text-base font-bold text-slate-900">Konfirmasi Pengeluaran</h4>
             <p className="text-xs text-slate-600 mt-1">
-              Apakah Anda yakin ingin mengeluarkan barang ini dari Gudang PT. KI?
+              Apakah Anda yakin ingin mengeluarkan barang ini dari Gudang KYOKKO BEACH?
             </p>
 
             <div className="rounded-lg bg-slate-50 p-4 border border-slate-200 text-xs space-y-2 font-mono my-4 text-slate-700">
@@ -726,10 +791,9 @@ export default function PengeluaranForm({ token }: PengeluaranFormProps) {
               <button
                 type="button"
                 onClick={handleSubmit}
-                disabled={submitting}
                 className="rounded-lg bg-rose-600 px-4 py-2 text-xs font-bold text-white hover:bg-rose-700 shadow-sm transition cursor-pointer"
               >
-                {submitting ? 'Menyimpan...' : 'Ya, Kirim Barang'}
+                Ya, Kirim Barang
               </button>
             </div>
           </div>

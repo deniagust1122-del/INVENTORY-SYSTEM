@@ -154,9 +154,17 @@ async function getSheetValues(range: string, token: string): Promise<string[][]>
   }
   
   const currentUrl = getAppsScriptUrl();
-  const url = `${currentUrl}?action=read&sheet=${encodeURIComponent(sheetName)}&range=${encodeURIComponent(cellRange)}`;
-  const proxyUrl = `/api/proxy?url=${encodeURIComponent(url)}`;
-  const res = await fetch(proxyUrl);
+  const nocache = `${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+  const url = `${currentUrl}?action=read&sheet=${encodeURIComponent(sheetName)}&range=${encodeURIComponent(cellRange)}&_nocache=${nocache}`;
+  const proxyUrl = `/api/proxy?url=${encodeURIComponent(url)}&_t=${nocache}`;
+  const res = await fetch(proxyUrl, {
+    cache: 'no-store',
+    headers: {
+      'Cache-Control': 'no-cache, no-store, must-revalidate',
+      'Pragma': 'no-cache',
+      'Expires': '0'
+    }
+  });
   if (!res.ok) {
     throw new Error(`Apps Script Fetch Error: ${res.status} ${res.statusText}`);
   }
@@ -925,9 +933,14 @@ export async function appendPenerimaanRow(
     return { status: 'success', offline: true };
   }
 
-// First fetch the headers from PENERIMAAN!B3:U3
+  const tStart = performance.now();
+  console.log(`[PENERIMAAN_LOG] Memulai appendPenerimaanRow pada ${new Date().toLocaleTimeString()}...`);
+
+  // First fetch the headers from PENERIMAAN!B3:U3
   let rawHeaders;
   let usePENERIMAAN = true;
+  const tHeaderStart = performance.now();
+  console.log(`[PENERIMAAN_LOG] 1. Mengambil headers kolom dari Google Sheets...`);
   try {
     rawHeaders = await getSheetValues('PENERIMAAN!B3:U3', token);
   } catch (err) {
@@ -939,6 +952,8 @@ export async function appendPenerimaanRow(
     }
     usePENERIMAAN = false;
   }
+  const tHeaderEnd = performance.now();
+  console.log(`[PENERIMAAN_LOG] ✓ Selesai mengambil headers kolom dalam ${(tHeaderEnd - tHeaderStart).toFixed(2)}ms.`);
   
   if (!rawHeaders || rawHeaders.length === 0) {
     console.warn('Penerimaan headers empty, attempting to auto-initialize...');
@@ -952,7 +967,11 @@ export async function appendPenerimaanRow(
   const headers = rawHeaders[0].map(h => String(h || '').trim().toUpperCase());
   
   // Find the exact bottom-most empty row starting from Row 4
+  const tNextRowStart = performance.now();
+  console.log(`[PENERIMAAN_LOG] 2. Mendeteksi baris kosong berikutnya di Google Sheets...`);
   const nextRow = await getPenerimaanNextRow(token);
+  const tNextRowEnd = performance.now();
+  console.log(`[PENERIMAAN_LOG] ✓ Berhasil mendeteksi baris kosong berikutnya (Baris: ${nextRow}) dalam ${(tNextRowEnd - tNextRowStart).toFixed(2)}ms.`);
  
   // Map values dynamically using mapDataToHeaders
   // We supply default values '0' for empty PPN/Diskon fields to prevent #VALUE! error
@@ -978,19 +997,31 @@ export async function appendPenerimaanRow(
     petugas: data.petugas || ''
   });
  
-  // Inject the print LPB HYPERLINK formula with semicolon regional separator
+  // Inject the dynamic print LPB HYPERLINK formula referencing current row cells (Column C for LPB)
   const idxCheck = headers.findIndex(h => h.includes('CHECK') || h.includes('CETAK') || h.includes('PRINT'));
+  const printUrlDynamic = `=HYPERLINK("${appUrl}/cetak-lpb?no_lpb=" & C${nextRow}; "🖨️ Cetak LPB")`;
   if (idxCheck !== -1) {
-    const printUrl = `${appUrl}/print-lpb?lpb=${encodeURIComponent(data.noLPB)}&po=${encodeURIComponent(data.noPO)}`;
-    rowArray[idxCheck] = `=HYPERLINK("${printUrl}"; "🖨️ Cetak LPB & QR")`;
+    rowArray[idxCheck] = printUrlDynamic;
+  } else {
+    // Fallback to column T (index 18) if header matching is not successful
+    if (rowArray.length > 18) {
+      rowArray[18] = printUrlDynamic;
+    }
   }
  
   // Update specific row range starting from Column B (B${nextRow}:U${nextRow})
   const sheetName = usePENERIMAAN ? 'PENERIMAAN' : 'Penerimaan';
   const rangeToUpdate = `${sheetName}!B${nextRow}:U${nextRow}`;
+  
+  const tUpdateRowStart = performance.now();
+  console.log(`[PENERIMAAN_LOG] 3. Menulis baris data penerimaan baru ke Google Sheets range ${rangeToUpdate}...`);
   const updateRes = await updateSheetRow(rangeToUpdate, [rowArray], token);
+  const tUpdateRowEnd = performance.now();
+  console.log(`[PENERIMAAN_LOG] ✓ Selesai menulis data baris ke sheet dalam ${(tUpdateRowEnd - tUpdateRowStart).toFixed(2)}ms.`);
 
   // Also, we update the PO sheet to mark this item as delivered/partially delivered if needed!
+  const tPoUpdateStart = performance.now();
+  console.log(`[PENERIMAAN_LOG] 4. Memperbarui status item pada sheet PO...`);
   try {
     const poItems = await fetchPOItems(token);
     const matchedPo = poItems.find(po => po.noPO === data.noPO && po.kodeBarang === data.kodeBarang);
@@ -1001,6 +1032,11 @@ export async function appendPenerimaanRow(
   } catch (poErr) {
     console.warn('Failed to update PO sheet delivery state:', poErr);
   }
+  const tPoUpdateEnd = performance.now();
+  console.log(`[PENERIMAAN_LOG] ✓ Selesai memperbarui status PO dalam ${(tPoUpdateEnd - tPoUpdateStart).toFixed(2)}ms.`);
+
+  const tTotal = performance.now() - tStart;
+  console.log(`[PENERIMAAN_LOG] 🎉 TOTAL PROSES PENULISAN PENERIMAAN SELESAI DALAM ${tTotal.toFixed(2)}ms.`);
 
   return updateRes;
 }
@@ -1478,6 +1514,96 @@ export async function updateSPBStatus(
   } catch (err) {
     console.error('Gagal memperbarui status SPB:', err);
     throw err;
+  }
+}
+
+export interface MasterPengeluaranItem {
+  kodePakai: string;
+  costCenter: string;
+  coaAccount: string;
+}
+
+export const DEFAULT_MASTER_PENGELUARAN: MasterPengeluaranItem[] = [
+  { kodePakai: 'PROD-01', costCenter: 'GUDANG UTAMA', coaAccount: '11510-Persediaan' },
+  { kodePakai: 'PROD-02', costCenter: 'PRODUKSI LINE A', coaAccount: '51010-Biaya Bahan Buku' },
+  { kodePakai: 'MAINT-01', costCenter: 'MAINTENANCE GUDANG', coaAccount: '51020-Biaya Suku Cadang' },
+  { kodePakai: 'OFFICE-01', costCenter: 'KANTOR / UMUM', coaAccount: '51030-Biaya Alat Tulis Kantor' }
+];
+
+export async function fetchMasterPengeluaranItems(token: string): Promise<MasterPengeluaranItem[]> {
+  const LOCAL_MASTER_PENGELUARAN_KEY = 'offline_master_pengeluaran_items';
+  if (!token) {
+    return getLocalData<MasterPengeluaranItem[]>(LOCAL_MASTER_PENGELUARAN_KEY, DEFAULT_MASTER_PENGELUARAN);
+  }
+  try {
+    const rawRows = await getSheetValues('MASTER PENGELUARAN!A1:G100', token);
+    if (!rawRows || rawRows.length === 0) {
+      console.log('[MASTER PENGELUARAN] No data returned from MASTER PENGELUARAN sheet, using fallback.');
+      return getLocalData<MasterPengeluaranItem[]>(LOCAL_MASTER_PENGELUARAN_KEY, DEFAULT_MASTER_PENGELUARAN);
+    }
+
+    // Try to find the header row first. Look for keywords in first few rows.
+    let headerRowIdx = -1;
+    for (let i = 0; i < Math.min(rawRows.length, 5); i++) {
+      const row = rawRows[i];
+      const hasHeader = row.some(cell => {
+        const val = String(cell || '').trim().toUpperCase();
+        return val.includes('KODE') || val.includes('PAKAI') || val.includes('COST') || val.includes('CENTER') || val.includes('COA') || val.includes('ACCOUNT');
+      });
+      if (hasHeader) {
+        headerRowIdx = i;
+        break;
+      }
+    }
+
+    let kodePakaiCol = 1; // Default Column B
+    let costCenterCol = 3; // Default Column D
+    let coaAccountCol = 4; // Default Column E
+
+    if (headerRowIdx !== -1) {
+      const headers = rawRows[headerRowIdx].map(h => String(h || '').trim().toUpperCase());
+      headers.forEach((h, idx) => {
+        if (h.includes('KODE') || h.includes('PAKAI')) {
+          kodePakaiCol = idx;
+        } else if (h.includes('COST') || h.includes('CENTER')) {
+          costCenterCol = idx;
+        } else if (h.includes('COA') || h.includes('ACCOUNT') || h.includes('REKENING')) {
+          coaAccountCol = idx;
+        }
+      });
+      console.log(`[MASTER PENGELUARAN] Mapped headers: kodePakaiCol=${kodePakaiCol}, costCenterCol=${costCenterCol}, coaAccountCol=${coaAccountCol}`);
+    }
+
+    const dataRows = headerRowIdx !== -1 ? rawRows.slice(headerRowIdx + 1) : rawRows;
+    const items: MasterPengeluaranItem[] = [];
+
+    dataRows.forEach(row => {
+      const kp = String(row[kodePakaiCol] || '').trim();
+      const cc = String(row[costCenterCol] || '').trim();
+      const coa = String(row[coaAccountCol] || '').trim();
+
+      // Skip empty or headers or templates
+      if (!kp || kp === '' || kp.toUpperCase() === 'KODE PAKAI' || kp.toUpperCase() === 'KODE_PAKAI') {
+        return;
+      }
+
+      items.push({
+        kodePakai: kp,
+        costCenter: cc || 'GUDANG UTAMA',
+        coaAccount: coa || '11510-Persediaan'
+      });
+    });
+
+    if (items.length === 0) {
+      return getLocalData<MasterPengeluaranItem[]>(LOCAL_MASTER_PENGELUARAN_KEY, DEFAULT_MASTER_PENGELUARAN);
+    }
+
+    // Save fetched items locally so fallback is updated
+    setLocalData(LOCAL_MASTER_PENGELUARAN_KEY, items);
+    return items;
+  } catch (err) {
+    console.warn('Could not load MASTER PENGELUARAN from Google Sheets, using fallback:', err);
+    return getLocalData<MasterPengeluaranItem[]>(LOCAL_MASTER_PENGELUARAN_KEY, DEFAULT_MASTER_PENGELUARAN);
   }
 }
 

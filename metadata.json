@@ -1,5 +1,5 @@
 {
-  "name": "Sistem Inventaris Gudang",
+  "name": "Kyokko Beach Gudang Logistik",
   "description": "Sistem inventaris gudang kokoh yang terhubung dengan Google Sheets sebagai database utama, dilengkapi dengan fitur scan barcode, penerimaan barang dari PO, pengeluaran barang, serta dashboard mutasi.",
   "requestFramePermissions": ["camera"],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]

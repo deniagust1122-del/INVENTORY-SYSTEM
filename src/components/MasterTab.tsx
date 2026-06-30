@@ -83,7 +83,7 @@ export default function MasterTab({ token }: MasterTabProps) {
             Katalog Master Barang & Mutasi
           </h2>
           <p className="text-xs text-slate-500 mt-0.5">
-            Database referensi item pergudangan PT. KI beserta riwayat stok berjalan.
+            Database referensi item pergudangan KYOKKO BEACH beserta riwayat stok berjalan.
           </p>
         </div>
         <button

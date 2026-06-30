@@ -197,69 +197,118 @@ export default function PenerimaanForm({ token, appUrl, onSuccess }: PenerimaanF
     setShowConfirmModal(true);
   };
 
-  const handleSubmit = async () => {
+  const handleSubmit = () => {
     if (!selectedPo) return;
+
+    const dataToSave = {
+      tanggal: tanggal,
+      noLPB: noLPB,
+      noPO: selectedPo.noPO,
+      kodeBarang: selectedPo.kodeBarang,
+      kodeSuplier: selectedPo.noPO.substring(0, 10), // Safe substring or generate short code
+      supplier: selectedPo.supplier,
+      namaBarang: selectedPo.namaBarang,
+      satuan: selectedPo.satuan,
+      qty: qtyPenerimaan,
+      hargaSatuan: hargaSatuan,
+      diskon: String(diskon),
+      ppn: String(ppn),
+      total: totalValue,
+      totalBayar: totalValue,
+      keterangan: keterangan || `Penerimaan LPB dari PO ${selectedPo.noPO}`,
+      kategori: kategori,
+      check: '✔',
+      verification: '✔ Verified',
+      shortCode: String(selectedPo.kodeBarang || '').slice(0, 4),
+      petugas: petugas
+    };
+
+    // Close modal immediately (Optimistic Feedback)
+    setShowConfirmModal(false);
+
+    // Call onSuccess immediately to transition the screen to the Print receipt layout
+    onSuccess({
+      noLPB,
+      noPO: selectedPo.noPO,
+      kodeBarang: selectedPo.kodeBarang,
+      namaBarang: selectedPo.namaBarang,
+      qty: qtyPenerimaan,
+      satuan: selectedPo.satuan,
+      hargaSatuan: hargaSatuan,
+      total: totalValue,
+      supplier: selectedPo.supplier,
+      tanggal: tanggal,
+      diskon: diskon,
+      ppn: ppn,
+      verification: '✔ Verified',
+      petugas: petugas,
+      printMode: 'all'
+    });
+
+    console.log(`[OPTIMISTIC_UI] Dialihkan ke Cetak LPB secara instan. Menjalankan sinkronisasi Google Sheets untuk ${noLPB} di latar belakang...`);
     
-    try {
-      setSubmitting(true);
-      setShowConfirmModal(false);
+    // Dispatch background sync event to App.tsx
+    window.dispatchEvent(new CustomEvent('bg-sync-task', {
+      detail: {
+        id: noLPB,
+        status: 'loading',
+        message: `Menulis data LPB (${noLPB}) ke Google Sheets...`
+      }
+    }));
 
-      // Call API to append row dynamically matching spreadsheet headers
-      await appendPenerimaanRow(
-        {
-          tanggal: tanggal,
-          noLPB: noLPB,
-          noPO: selectedPo.noPO,
-          kodeBarang: selectedPo.kodeBarang,
-          kodeSuplier: selectedPo.noPO.substring(0, 10), // Safe substring or generate short code
-          supplier: selectedPo.supplier,
-          namaBarang: selectedPo.namaBarang,
-          satuan: selectedPo.satuan,
-          qty: qtyPenerimaan,
-          hargaSatuan: hargaSatuan,
-          diskon: String(diskon),
-          ppn: String(ppn),
-          total: totalValue,
-          totalBayar: totalValue,
-          keterangan: keterangan || `Penerimaan LPB dari PO ${selectedPo.noPO}`,
-          kategori: kategori,
-          check: '✔',
-          verification: '✔ Verified',
-          shortCode: String(selectedPo.kodeBarang || '').slice(0, 4),
-          petugas: petugas
-        },
-        token,
-        appUrl
-      );
+    let completed = false;
 
-      // Silently re-fetch and sync the data so the right table updates instantly
-      await loadData(true);
+    // Timeout mechanism: trigger warning if write takes more than 5 seconds
+    const timeoutTimer = setTimeout(() => {
+      if (!completed) {
+        console.warn(`[TIMEOUT_WARN] Penulisan data ${noLPB} telah berjalan lebih dari 5 detik.`);
+        window.dispatchEvent(new CustomEvent('bg-sync-task', {
+          detail: {
+            id: noLPB,
+            status: 'timeout',
+            message: `Koneksi Google Sheets lambat. Proses penulisan ${noLPB} tetap dilanjutkan secara aman di latar belakang.`
+          }
+        }));
+      }
+    }, 5000);
 
-      // Trigger success and print callback
-      onSuccess({
-        noLPB,
-        noPO: selectedPo.noPO,
-        kodeBarang: selectedPo.kodeBarang,
-        namaBarang: selectedPo.namaBarang,
-        qty: qtyPenerimaan,
-        satuan: selectedPo.satuan,
-        hargaSatuan: hargaSatuan,
-        total: totalValue,
-        supplier: selectedPo.supplier,
-        tanggal: tanggal,
-        diskon: diskon,
-        ppn: ppn,
-        verification: '✔ Verified',
-        petugas: petugas,
-        printMode: 'all'
+    // Trigger asynchronous save request
+    appendPenerimaanRow(dataToSave, token, appUrl)
+      .then(async () => {
+        completed = true;
+        clearTimeout(timeoutTimer);
+        console.log(`[OPTIMISTIC_UI] ✓ Data ${noLPB} sukses terkirim ke Google Sheets.`);
+        
+        // Dispatch success event
+        window.dispatchEvent(new CustomEvent('bg-sync-task', {
+          detail: {
+            id: noLPB,
+            status: 'success',
+            message: `Penerimaan LPB (${noLPB}) berhasil disimpan ke Google Sheets.`
+          }
+        }));
+
+        // Fetch/sync data silently in the background
+        try {
+          await loadData(true);
+        } catch (syncErr) {
+          console.warn('[OPTIMISTIC_UI] Silent reload failed, using cached state', syncErr);
+        }
+      })
+      .catch((err: any) => {
+        completed = true;
+        clearTimeout(timeoutTimer);
+        console.error(`[OPTIMISTIC_UI] ❌ Gagal menyimpan data LPB ${noLPB} di latar belakang:`, err);
+        
+        // Dispatch error event
+        window.dispatchEvent(new CustomEvent('bg-sync-task', {
+          detail: {
+            id: noLPB,
+            status: 'error',
+            message: `Gagal menyimpan LPB (${noLPB}): ${err.message || 'Koneksi error'}`
+          }
+        }));
       });
-
-    } catch (err: any) {
-      console.error(err);
-      alert(`Terjadi kesalahan saat menyimpan data: ${err.message}`);
-    } finally {
-      setSubmitting(false);
-    }
   };
 
   // Helper to re-print older LPB receipts
